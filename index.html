@@ -1319,7 +1319,7 @@
             stealthMode: false,
             bloodlustMode: false,
             domainActive: false,
-            lastResetDate: null,
+            lastResetDate: new Date().toDateString(), // Initialize to today, not null!
             // New enhancement features
             questHistory: [],
             todayXP: 0,
@@ -1573,6 +1573,9 @@
             const today = now.toDateString();
             
             if (gameState.lastResetDate !== today) {
+                // CRITICAL: Backup templates before any operations
+                const savedTemplates = gameState.savedQuests ? [...gameState.savedQuests] : [];
+                
                 // IMPORTANT: Check for expired quests BEFORE deleting them
                 // This applies penalties for incomplete daily quests
                 checkQuestExpiration();
@@ -1593,7 +1596,8 @@
                 // Update last reset date
                 gameState.lastResetDate = today;
                 
-                // NOTE: savedQuests (templates) are NOT reset - they persist!
+                // CRITICAL: Restore templates after reset operations
+                gameState.savedQuests = savedTemplates;
                 
                 saveGame();
                 updateUI();
@@ -1615,7 +1619,14 @@
             const saved = localStorage.getItem('sovereignZenith');
             if (saved) {
                 const parsed = JSON.parse(saved);
+                
+                // CRITICAL: Preserve savedQuests if it exists in saved data
+                const preservedTemplates = parsed.savedQuests || gameState.savedQuests || [];
+                
                 gameState = { ...gameState, ...parsed };
+                
+                // CRITICAL: Explicitly restore savedQuests to prevent data loss
+                gameState.savedQuests = preservedTemplates;
                 
                 // Clear penalty if time has passed
                 if (gameState.penaltyUntil && Date.now() > gameState.penaltyUntil) {
@@ -1627,6 +1638,11 @@
                 if (gameState.hp > gameState.maxHP) {
                     gameState.hp = gameState.maxHP;
                 }
+            }
+            
+            // Ensure savedQuests exists (for backwards compatibility)
+            if (!gameState.savedQuests) {
+                gameState.savedQuests = [];
             }
             
             // Check for midnight reset on load
@@ -2445,6 +2461,13 @@
                 updateCombo();
                 checkPenalty();
                 
+                // FORCE: Always render quests regardless of tab (temporary fix)
+                try {
+                    renderQuests();
+                } catch (e) {
+                    console.error('renderQuests error:', e);
+                }
+                
                 // Only render active tab content (MAJOR PERFORMANCE BOOST)
                 renderActiveTab();
             });
@@ -2509,6 +2532,41 @@
             
             // Check raids on any tab change
             checkRaids();
+            
+            // Update mode button states
+            const stealthBtn = document.getElementById('stealthBtn');
+            const bloodlustBtn = document.getElementById('bloodlustBtn');
+            const domainBtn = document.getElementById('domainBtn');
+            
+            if (stealthBtn) {
+                if (gameState.stealthMode) {
+                    stealthBtn.classList.add('ring-2', 'ring-green-400');
+                    stealthBtn.textContent = '🌑 Stealth (ON)';
+                } else {
+                    stealthBtn.classList.remove('ring-2', 'ring-green-400');
+                    stealthBtn.textContent = '🌑 Stealth';
+                }
+            }
+            
+            if (bloodlustBtn) {
+                if (gameState.bloodlustMode) {
+                    bloodlustBtn.classList.add('ring-2', 'ring-red-400');
+                    bloodlustBtn.textContent = '💀 Bloodlust (ON)';
+                } else {
+                    bloodlustBtn.classList.remove('ring-2', 'ring-red-400');
+                    bloodlustBtn.textContent = '💀 Bloodlust';
+                }
+            }
+            
+            if (domainBtn) {
+                if (gameState.domainActive) {
+                    domainBtn.classList.add('ring-2', 'ring-yellow-400');
+                    domainBtn.textContent = '⚡ Domain (READY!)';
+                } else {
+                    domainBtn.classList.remove('ring-2', 'ring-yellow-400');
+                    domainBtn.textContent = '⚡ Domain';
+                }
+            }
         }
 
         // Check for penalty zone
@@ -2680,23 +2738,46 @@
 
         function renderQuests() {
             const questList = document.getElementById('questList');
-            const filtered = gameState.quests.filter(q => q.type === gameState.questMode);
+            let filtered = gameState.quests.filter(q => q.type === gameState.questMode);
             
             if (filtered.length === 0) {
                 questList.innerHTML = '<p class="text-gray-400 text-center py-4">No missions available</p>';
                 return;
             }
             
+            // Apply sorting
+            if (gameState.questSort === 'rank') {
+                const rankOrder = { 'S': 0, 'A': 1, 'B': 2, 'C': 3, 'D': 4, 'E': 5 };
+                filtered.sort((a, b) => rankOrder[a.rank] - rankOrder[b.rank]);
+            } else if (gameState.questSort === 'time') {
+                filtered.sort((a, b) => (a.expiresAt || Infinity) - (b.expiresAt || Infinity));
+            } else if (gameState.questSort === 'stat') {
+                filtered.sort((a, b) => {
+                    if (a.statType === 'none') return 1;
+                    if (b.statType === 'none') return -1;
+                    return a.statType.localeCompare(b.statType);
+                });
+            }
+            
             const now = Date.now();
+            const inBulkMode = gameState.bulkSelectMode;
             
             questList.innerHTML = filtered.map((q, idx) => {
                 const statBonus = q.statType && q.statType !== 'none' ? ` | +${q.statBonus} ${q.statType.toUpperCase()}` : '';
                 const timeLeft = q.expiresAt ? Math.max(0, Math.ceil((q.expiresAt - now) / 1000 / 60 / 60)) : null;
                 const timeWarning = timeLeft !== null && timeLeft < 6 ? 'text-red-400' : 'text-gray-400';
+                const isSelected = gameState.selectedQuests.has(idx);
                 
                 return `
-                <div class="glass rounded p-3">
+                <div class="glass rounded p-3 ${isSelected ? 'ring-2 ring-blue-500' : ''}">
                     <div class="flex justify-between items-start gap-2">
+                        ${inBulkMode ? `
+                        <div class="flex items-center">
+                            <input type="checkbox" 
+                                   ${isSelected ? 'checked' : ''} 
+                                   onchange="toggleQuestSelect(${idx})"
+                                   class="w-5 h-5 cursor-pointer">
+                        </div>` : ''}
                         <div class="flex-1">
                             <div class="flex items-center gap-2">
                                 <span class="rank-${q.rank.toLowerCase()} font-bold">[${q.rank}]</span>
@@ -2707,6 +2788,7 @@
                             </div>
                             ${timeLeft !== null ? `<div class="text-xs ${timeWarning} mt-1">⏱️ ${timeLeft}h left (Fail: -${Math.floor(q.xp * 0.5)} XP)</div>` : ''}
                         </div>
+                        ${!inBulkMode ? `
                         <div class="flex flex-col gap-1">
                             <button onclick="completeQuest(${idx})" class="px-3 py-1 bg-green-600 hover:bg-green-700 text-white rounded text-sm whitespace-nowrap">
                                 ✓ Complete
@@ -2717,11 +2799,20 @@
                             <button onclick="deleteQuest(${idx})" class="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-xs">
                                 🗑️
                             </button>
-                        </div>
+                        </div>` : ''}
                     </div>
                 </div>
             `;
             }).join('');
+        }
+        
+        function toggleQuestSelect(idx) {
+            if (gameState.selectedQuests.has(idx)) {
+                gameState.selectedQuests.delete(idx);
+            } else {
+                gameState.selectedQuests.add(idx);
+            }
+            updateUI();
         }
         
         
@@ -2774,14 +2865,34 @@
                 return;
             }
             
+            // Check for duplicate quest (same name and type)
+            const duplicate = gameState.quests.find(q => 
+                q.name.toLowerCase() === name.toLowerCase() && 
+                q.type === gameState.questMode
+            );
+            
+            if (duplicate) {
+                showNotification(`Quest "${name}" already exists in ${gameState.questMode} quests!`, 'error');
+                return;
+            }
+            
             const multiplier = rankMultipliers[rank];
             const typeMultiplier = gameState.questMode === 'longterm' ? 10 : 1;
             const statBonus = multiplier * 2; // Stat bonus scales with rank
             
             // Daily quests expire at midnight, long-term quests expire in 7 days
-            const expiresAt = gameState.questMode === 'daily' 
-                ? new Date().setHours(23, 59, 59, 999)
-                : Date.now() + (7 * 24 * 60 * 60 * 1000);
+            let expiresAt;
+            if (gameState.questMode === 'daily') {
+                const midnight = new Date();
+                midnight.setHours(23, 59, 59, 999);
+                // If midnight is in the past (already passed today), set to tomorrow's midnight
+                if (midnight.getTime() < Date.now()) {
+                    midnight.setDate(midnight.getDate() + 1);
+                }
+                expiresAt = midnight.getTime();
+            } else {
+                expiresAt = Date.now() + (7 * 24 * 60 * 60 * 1000);
+            }
             
             const quest = {
                 name,
@@ -2826,6 +2937,9 @@
             document.getElementById('questName').value = '';
             saveGame();
             updateUI();
+            
+            // Force render quests immediately (in case tab isn't active)
+            renderQuests();
         }
 
         // Check for expired quests and apply penalties
@@ -2956,6 +3070,18 @@
             addXP(xpGained);
             gameState.gold += goldGained;
             gameState.fatigue += fatigueGained;
+            
+            // Auto-turn off Stealth and Bloodlust after quest completion
+            if (gameState.stealthMode) {
+                gameState.stealthMode = false;
+                document.body.style.filter = '';
+                showNotification('🌑 Stealth Mode auto-deactivated', 'info');
+            }
+            if (gameState.bloodlustMode) {
+                gameState.bloodlustMode = false;
+                document.body.style.filter = '';
+                showNotification('💀 Bloodlust Mode auto-deactivated', 'info');
+            }
             
             // Track statistics
             trackQuestComplete(quest, xpGained, goldGained);
@@ -3209,6 +3335,34 @@
                 const boss = gameState.currentBoss;
                 gameState.currentBoss = null;
                 
+                // Apply mode multipliers to boss rewards
+                let xpMultiplier = 1;
+                let goldMultiplier = 1;
+                
+                // BLOODLUST: +75% XP & Gold
+                if (gameState.bloodlustMode) {
+                    xpMultiplier *= 1.75;
+                    goldMultiplier *= 1.75;
+                    gameState.bloodlustMode = false; // Auto-off after boss
+                    document.body.style.filter = '';
+                    showNotification('💀 Bloodlust consumed by boss battle!', 'info');
+                }
+                
+                // DOMAIN: 3x XP & Gold
+                if (gameState.domainActive) {
+                    xpMultiplier *= 3;
+                    goldMultiplier *= 3;
+                    gameState.domainActive = false; // Auto-off after boss
+                    showNotification('⚡ DOMAIN consumed by boss battle!', 'legendary');
+                }
+                
+                // STEALTH: No effect on bosses (can't stealth a boss fight!)
+                if (gameState.stealthMode) {
+                    gameState.stealthMode = false;
+                    document.body.style.filter = '';
+                    showNotification('🌑 Stealth ended (no effect on boss battles)', 'info');
+                }
+                
                 // Track statistics
                 trackBossDefeated();
                 trackShadowExtracted();
@@ -3226,10 +3380,13 @@
                     gear: null
                 });
                 
-                gameState.gold += boss.maxHP;
-                addXP(boss.maxHP);
+                const xpGained = Math.floor(boss.maxHP * xpMultiplier);
+                const goldGained = Math.floor(boss.maxHP * goldMultiplier);
                 
-                showNotification(`⚔️ VICTORY! ${boss.name} defeated! Gained ${boss.maxHP} XP & Gold. ARISE!`, 'legendary');
+                gameState.gold += goldGained;
+                addXP(xpGained);
+                
+                showNotification(`⚔️ VICTORY! ${boss.name} defeated! Gained ${xpGained} XP & ${goldGained} Gold. ARISE!`, 'legendary');
                 speakSystem(`Arise, ${boss.name}`);
             } else {
                 // Battle continues - show damage dealt
@@ -3304,7 +3461,13 @@
             // Calculate success chance based on total stats
             const totalPower = gameState.str + gameState.int + gameState.agi + gameState.sen;
             const requiredPower = gameState.level * 50; // Scales with level
-            const successChance = Math.min(90, Math.max(30, (totalPower / requiredPower) * 100));
+            let successChance = Math.min(90, Math.max(30, (totalPower / requiredPower) * 100));
+            
+            // STEALTH MODE: +10% success chance
+            if (gameState.stealthMode) {
+                successChance = Math.min(95, successChance + 10);
+                showNotification('🌑 Stealth active: +10% success chance!', 'info');
+            }
             
             const roll = Math.random() * 100;
             
@@ -3317,9 +3480,38 @@
                     gear: null
                 });
                 
-                // Bonus rewards
-                const bonusXP = gameState.level * 100;
-                const bonusGold = gameState.level * 50;
+                // Apply mode multipliers to glitch gate rewards
+                let xpMultiplier = 1;
+                let goldMultiplier = 1;
+                
+                // BLOODLUST: +75% XP & Gold
+                if (gameState.bloodlustMode) {
+                    xpMultiplier *= 1.75;
+                    goldMultiplier *= 1.75;
+                    gameState.bloodlustMode = false;
+                    document.body.style.filter = '';
+                    showNotification('💀 Bloodlust consumed by glitch gate!', 'info');
+                }
+                
+                // DOMAIN: 3x XP & Gold
+                if (gameState.domainActive) {
+                    xpMultiplier *= 3;
+                    goldMultiplier *= 3;
+                    gameState.domainActive = false;
+                    showNotification('⚡ DOMAIN consumed by glitch gate!', 'legendary');
+                }
+                
+                // STEALTH: +10% success chance bonus!
+                // (Already applied above in calculation, consumed here)
+                if (gameState.stealthMode) {
+                    gameState.stealthMode = false;
+                    document.body.style.filter = '';
+                    showNotification('🌑 Stealth consumed by glitch gate!', 'info');
+                }
+                
+                // Bonus rewards with multipliers
+                const bonusXP = Math.floor(gameState.level * 100 * xpMultiplier);
+                const bonusGold = Math.floor(gameState.level * 50 * goldMultiplier);
                 addXP(bonusXP);
                 gameState.gold += bonusGold;
                 
@@ -3716,11 +3908,18 @@
                 nightmare: { gold: 5000, shards: 10 } 
             };
             
+            // STEALTH MODE: -20% raid duration (faster completion!)
+            let durationMultiplier = 1;
+            if (gameState.stealthMode) {
+                durationMultiplier = 0.8; // 20% faster
+                showNotification('🌑 Stealth active: Raid 20% faster!', 'success');
+            }
+            
             const raid = {
                 shadowName,
                 difficulty,
                 startTime: Date.now(),
-                endTime: Date.now() + durations[difficulty],
+                endTime: Date.now() + (durations[difficulty] * durationMultiplier),
                 rewards: rewards[difficulty]
             };
             
@@ -3735,7 +3934,33 @@
             const completedRaids = gameState.redGateRaids.filter(r => r.endTime <= now);
             
             completedRaids.forEach(raid => {
-                gameState.gold += raid.rewards.gold * gameState.goldMultiplier;
+                // Apply mode multipliers to raid rewards
+                let goldMultiplier = gameState.goldMultiplier;
+                
+                // BLOODLUST: +75% Gold
+                if (gameState.bloodlustMode) {
+                    goldMultiplier *= 1.75;
+                    gameState.bloodlustMode = false;
+                    document.body.style.filter = '';
+                    showNotification('💀 Bloodlust consumed by raid completion!', 'info');
+                }
+                
+                // DOMAIN: 3x Gold & Shards
+                if (gameState.domainActive) {
+                    goldMultiplier *= 3;
+                    raid.rewards.shards *= 3;
+                    gameState.domainActive = false;
+                    showNotification('⚡ DOMAIN consumed by raid completion!', 'legendary');
+                }
+                
+                // STEALTH: -20% raid duration (applied when starting raid, not here)
+                if (gameState.stealthMode) {
+                    gameState.stealthMode = false;
+                    document.body.style.filter = '';
+                    showNotification('🌑 Stealth ended', 'info');
+                }
+                
+                gameState.gold += raid.rewards.gold * goldMultiplier;
                 gameState.shards += raid.rewards.shards;
             });
             
@@ -4218,6 +4443,92 @@
         document.getElementById('craftGear').addEventListener('click', craftGear);
         document.getElementById('addLog').addEventListener('click', addLog);
         document.getElementById('exportJourney').addEventListener('click', exportJourney);
+        
+        // Sort and Bulk functionality
+        document.getElementById('sortQuestsBtn').addEventListener('click', () => {
+            const sortOptions = document.getElementById('sortOptions');
+            sortOptions.classList.toggle('hidden');
+        });
+        
+        document.getElementById('bulkSelectBtn').addEventListener('click', () => {
+            gameState.bulkSelectMode = !gameState.bulkSelectMode;
+            const bulkActions = document.getElementById('bulkActions');
+            bulkActions.classList.toggle('hidden');
+            
+            if (!gameState.bulkSelectMode) {
+                gameState.selectedQuests.clear();
+            }
+            
+            updateUI();
+        });
+        
+        // Sort options
+        document.querySelectorAll('.sort-option').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const sortBy = btn.dataset.sort;
+                gameState.questSort = sortBy;
+                
+                // Update button states
+                document.querySelectorAll('.sort-option').forEach(b => {
+                    b.className = 'sort-option px-3 py-1 bg-gray-700 rounded text-sm';
+                });
+                btn.className = 'sort-option px-3 py-1 bg-blue-600 rounded text-sm';
+                
+                updateUI();
+                showNotification(`Sorted by ${sortBy}`, 'info');
+            });
+        });
+        
+        // Bulk actions
+        document.getElementById('bulkCompleteBtn').addEventListener('click', () => {
+            const selectedIndices = Array.from(gameState.selectedQuests);
+            if (selectedIndices.length === 0) {
+                showNotification('No quests selected', 'error');
+                return;
+            }
+            
+            // Complete in reverse order to avoid index shifting
+            selectedIndices.sort((a, b) => b - a).forEach(idx => {
+                completeQuest(idx);
+            });
+            
+            gameState.selectedQuests.clear();
+            gameState.bulkSelectMode = false;
+            document.getElementById('bulkActions').classList.add('hidden');
+            updateUI();
+            showNotification(`Completed ${selectedIndices.length} quests!`, 'success');
+        });
+        
+        document.getElementById('bulkDeleteBtn').addEventListener('click', () => {
+            const selectedIndices = Array.from(gameState.selectedQuests);
+            if (selectedIndices.length === 0) {
+                showNotification('No quests selected', 'error');
+                return;
+            }
+            
+            if (!confirm(`Delete ${selectedIndices.length} quests?`)) return;
+            
+            const filtered = gameState.quests.filter(q => q.type === gameState.questMode);
+            selectedIndices.sort((a, b) => b - a).forEach(idx => {
+                const quest = filtered[idx];
+                const actualIdx = gameState.quests.indexOf(quest);
+                gameState.quests.splice(actualIdx, 1);
+            });
+            
+            gameState.selectedQuests.clear();
+            gameState.bulkSelectMode = false;
+            document.getElementById('bulkActions').classList.add('hidden');
+            saveGame();
+            updateUI();
+            showNotification(`Deleted ${selectedIndices.length} quests`, 'info');
+        });
+        
+        document.getElementById('cancelBulkBtn').addEventListener('click', () => {
+            gameState.bulkSelectMode = false;
+            gameState.selectedQuests.clear();
+            document.getElementById('bulkActions').classList.add('hidden');
+            updateUI();
+        });
 
         // Notification system
         function showNotification(message, type = 'info') {
